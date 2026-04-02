@@ -40,7 +40,7 @@ npm run build
 ### Automatico (raccomandato)
 
 1. Crea un repository GitHub (es. `quoteflow-pro-cascos`)
-2. In `vite.config.js` imposta `base: '/NOME_REPO/'`
+2. In `vite.config.js` lascia `base: './'` per evitare schermate bianche su GitHub Pages
 3. Push su `main` → il workflow `.github/workflows/deploy.yml` si occupa del deploy
 4. Vai su **Settings → Pages → Source: GitHub Actions**
 
@@ -48,7 +48,7 @@ npm run build
 
 1. Importa il repo su [vercel.com](https://vercel.com)
 2. Framework: Vite
-3. Imposta `base: '/'` in `vite.config.js`
+3. Puoi lasciare `base: './'` anche su Vercel
 4. Deploy automatico ad ogni push
 
 ---
