@@ -3,7 +3,7 @@ import productsData from './data/products.json';
 import { VEHICLE_TYPES, FLOOR_TYPES, selectProducts, generateMotivazione } from './data/rules.js';
 import {
   ChevronRight, RotateCcw, FileText, ShoppingCart, Building2,
-  Truck, Download, CheckCircle2, ArrowLeft, AlertCircle, Upload,
+  Truck, MessageCircle, Copy, CheckCircle2, ArrowLeft, AlertCircle, Upload,
   Package, Euro, Gauge, Wrench
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -67,6 +67,65 @@ const formatPrice = (n) =>
   new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', minimumFractionDigits: 0 }).format(n);
 
 const today = () => new Date().toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric' });
+
+
+const generateDocumentText = ({ mode, customer, product, config, qty, note, sconto, prezzoTotale, scontoEuro, prezzoFinale }) => {
+  const vehicleInfo = VEHICLE_TYPES.find(v => v.id === config.veicolo);
+  const floorLabel = FLOOR_TYPES.find(f => f.id === config.pavimentazione)?.label || '—';
+  const docType = mode === 'order' ? 'ORDINE' : 'PREVENTIVO';
+  const customerName = customer.azienda || customer.nome || '—';
+
+  return `${docType} CASCOS BY CORMACH
+
+` +
+    `Data: ${today()}
+` +
+    `Cliente: ${customerName}
+` +
+    `Contatto: ${customer.telefono || '—'}
+` +
+    `Email: ${customer.email || '—'}
+` +
+    `Indirizzo: ${customer.indirizzo || '—'}
+
+` +
+    `Pavimentazione: ${floorLabel}
+` +
+    `Veicolo: ${vehicleInfo?.label || '—'}
+` +
+    `Configurazione: ${product.pavimentazione === 'industriale' ? 'Senza Pedana' : 'Con Pedana'}
+
+` +
+    `Prodotto: ${product.modello}
+` +
+    `Codice: ${product.codice}
+` +
+    `Descrizione: ${product.descrizione}
+` +
+    `Portata: ${product.portata}
+` +
+    `Categoria: ${product.categoria}
+` +
+    `Quantità: ${qty}
+` +
+    `Prezzo unitario netto: ${formatPrice(product.prezzoNetto)}
+` +
+    `Totale lordo: ${formatPrice(prezzoTotale)}
+` +
+    (sconto > 0 ? `Sconto ${sconto}%: -${formatPrice(scontoEuro)}\n` : '') +
+    `Totale netto: ${formatPrice(prezzoFinale)}
+` +
+    `IVA: esclusa
+
+` +
+    `Note: ${note || '—'}
+` +
+    `Note tecniche: ${product.noteTecniche || '—'}
+
+` +
+    `CASCOS by Cormach Correggio Machinery`;
+};
+
 
 // ─── SUB-COMPONENTS ──────────────────────────────────────────────────────────
 
@@ -435,10 +494,29 @@ function QuoteView({ mode, product, config, onBack, onReset }) {
   const prezzoFinale = prezzoTotale - scontoEuro;
   const docType = mode === 'order' ? 'ORDINE' : 'PREVENTIVO';
 
+  const [copied, setCopied] = useState(false);
+
   const handleGenerate = () => setGenerated(true);
 
-  const handlePrint = () => {
-    window.print();
+  const buildDocumentText = () => generateDocumentText({
+    mode, customer, product, config, qty, note, sconto, prezzoTotale, scontoEuro, prezzoFinale
+  });
+
+  const handleWhatsApp = () => {
+    const text = buildDocumentText();
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleCopyTxt = async () => {
+    const text = buildDocumentText();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      alert('Copia non riuscita.');
+    }
   };
 
   const inputCls = "w-full glass rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 border border-slate-700 focus:outline-none focus:border-blue-500 transition-colors";
@@ -567,12 +645,18 @@ function QuoteView({ mode, product, config, onBack, onReset }) {
         </div>
 
         {/* Actions */}
-        <div className="no-print grid grid-cols-2 gap-3">
+        <div className="no-print grid grid-cols-1 sm:grid-cols-3 gap-3">
           <button
-            onClick={handlePrint}
+            onClick={handleWhatsApp}
             className="glass glass-hover rounded-xl py-3 flex items-center justify-center gap-2 text-sm text-white font-medium transition-colors"
           >
-            <Download size={16} /> Stampa / PDF
+            <MessageCircle size={16} /> Condividi WhatsApp
+          </button>
+          <button
+            onClick={handleCopyTxt}
+            className="glass glass-hover rounded-xl py-3 flex items-center justify-center gap-2 text-sm text-white font-medium transition-colors"
+          >
+            <Copy size={16} /> {copied ? 'Copiato ✓' : 'Genera TXT da copiare'}
           </button>
           <button
             onClick={onReset}
