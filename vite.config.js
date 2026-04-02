@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
 export default defineConfig({
-  base: '/quoteflow-pro-cascos/',  // Cambia con il nome del tuo repo GitHub
+  base: '/',  // Cambia con il nome del tuo repo GitHub
   plugins: [
     react(),
     VitePWA({
