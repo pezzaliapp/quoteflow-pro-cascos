@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "QuoteFlow Pro – Cascos Lifts | Configuratore e preventivi sollevatori",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
