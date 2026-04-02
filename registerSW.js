@@ -1,0 +1,1 @@
+if('serviceWorker' in navigator) {window.addEventListener('load', () => {navigator.serviceWorker.register('/quoteflow-pro-cascos/sw.js', { scope: '/quoteflow-pro-cascos/' })})}
