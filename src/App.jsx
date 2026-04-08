@@ -7,170 +7,140 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
-// ─── DATI DAL PDF: MISURE_GENERALI_BRACCI_TIPO_VEICOLI ────────────────────────
-// Fonte: scheda tecnica ufficiale Cascos — range bracci (mm) per modello
+// ─── DATI BRACCI DAL PDF — mappati su famiglia reale di products.json ────────
 //
-// Ogni entry:
-//   modelloKey  → identificatore che corrisponde al campo "modello" in products.json
-//   portata     → ton
-//   minMm       → estensione minima bracci (mm)  [valore principale, non ridotto]
-//   maxMm       → estensione massima bracci (mm)
-//   veicoli     → categorie veicoli compatibili (usate per pre-filtraggio)
+// Fonte primaria range mm: noteTecniche in products.json (es. "710→1050mm")
+// Fonte secondaria: PDF MISURE_GENERALI_BRACCI_TIPO_VEICOLI
 //
-// NOTA: C5.5 WAGON 1500 ha due posizioni: min ridotta (758) per seduta, operativa 823 mm
-//       C5 WAGON 1800: min ridotta (855), operativa 920 mm — usiamo il valore operativo
+// famiglia (products.json) → range bracci reali
+//   C3.2 / C3.2S       → 710–1050  (bracci doppi standard)
+//   C3.2 Confort        → 597–1122  (2 triple + 2 doppie, range esteso)
+//   C3.5 / C3.5S       → 690–1325
+//   C4  / C4S          → 668–1341
+//   C5.5 / C5.5S       → 705–1335
+//   C5.5 Wagon / C5.5S Wagon → 758–1505
+//   C5 Wagon / C5S     → 855–1810
 
-const BRACCI_RULES = [
-  {
-    modelloKey: 'C3.2E',
-    portata: 3.2,
-    minMm: 710,
-    maxMm: 1050,
-    veicoli: ['micro', 'sedan'],
-    label: 'C3.2E – 3,2 ton',
-    note: 'Ideale per citycar e utilitarie compatte',
-  },
-  {
-    modelloKey: 'C3.2CONFORT',
-    portata: 3.2,
-    minMm: 597,
-    maxMm: 1122,
-    veicoli: ['sedan', 'cuv'],
-    label: 'C3.2 CONFORT – 3,2 ton',
-    note: 'Range esteso — adatto a berline e crossover compatti',
-  },
-  {
-    modelloKey: 'C4',
-    portata: 4.0,
-    minMm: 668,
-    maxMm: 1325,
-    veicoli: ['sedan', 'cuv', 'suv', 'van'],
-    label: 'C4 – 4 ton',
-    note: 'SUV, crossover e furgoni leggeri',
-  },
-  {
-    modelloKey: 'C5.5',
-    portata: 5.5,
-    minMm: 705,
-    maxMm: 1335,
-    veicoli: ['sedan', 'cuv', 'suv', 'van', 'minivan', 'minitruck'],
-    label: 'C5.5 – 5,5 ton',
-    note: 'Versatile — copre sedan, SUV, furgoni e mini-truck',
-  },
-  {
-    modelloKey: 'C5.5WAGON1500',
-    portata: 5.5,
-    minMm: 823,   // valore operativo (758 = posizione ridotta)
-    maxMm: 1505,
-    veicoli: ['van', 'minivan', 'minitruck'],
-    label: 'C5.5 WAGON 1500 – 5,5 ton',
-    note: 'Furgoni e veicoli commerciali medi',
-  },
-  {
-    modelloKey: 'C5WAGON1800',
-    portata: 5.0,
-    minMm: 920,   // valore operativo (855 = posizione ridotta)
-    maxMm: 1810,
-    veicoli: ['van', 'minitruck', 'truck'],
-    label: 'C5 WAGON 1800 – 5 ton',
-    note: 'Veicoli commerciali grandi e furgoni long-wheelbase',
-  },
-];
+const BRACCI_PER_FAMIGLIA = {
+  'C3.2':    { minMm: 710,  maxMm: 1050, note: 'Bracci doppi — utilitarie e citycar' },
+  'C3.2S':   { minMm: 710,  maxMm: 1050, note: 'Bracci doppi — utilitarie e citycar' },
+  // Confort: identificato dall'id specifico
+  'C3.2_CONFORT':  { minMm: 597, maxMm: 1122, note: '2 braccia triple + 2 doppie — range esteso' },
+  'C3.2S_CONFORT': { minMm: 597, maxMm: 1122, note: '2 braccia triple + 2 doppie — range esteso' },
+  'C3.5':    { minMm: 690,  maxMm: 1325, note: '4 braccia triple' },
+  'C3.5S':   { minMm: 690,  maxMm: 1325, note: '4 braccia triple — senza pedana' },
+  'C4':      { minMm: 668,  maxMm: 1341, note: '4 braccia triple — SUV e furgoni leggeri' },
+  'C4S':     { minMm: 668,  maxMm: 1341, note: '4 braccia triple — senza pedana' },
+  'C5.5':    { minMm: 705,  maxMm: 1335, note: 'Doppio gioco supporti 60-100mm' },
+  'C5.5S':   { minMm: 705,  maxMm: 1335, note: 'Doppio gioco supporti 60-100mm — senza pedana' },
+  // Wagon C5.5: famiglia 'C5.5' ma id contiene 'wagon'
+  'C5.5_WAGON':  { minMm: 758, maxMm: 1505, note: 'Bracci extra-lunghi — grandi furgoni' },
+  'C5.5S_WAGON': { minMm: 758, maxMm: 1505, note: 'Bracci extra-lunghi — senza pedana' },
+  // C5 Wagon
+  'C5':      { minMm: 855,  maxMm: 1810, note: 'Bracci extra-lunghi — passo lungo' },
+  'C5S':     { minMm: 855,  maxMm: 1810, note: 'Bracci extra-lunghi — senza pedana' },
+};
 
-// ─── TIPI VEICOLO ─────────────────────────────────────────────────────────────
+// Ritorna il range bracci per un prodotto dato il suo record completo
+function getBracciInfo(product) {
+  const id = product.id; // es: 'c32', 'c32_confort', 'c55wagon', 'c55s_wagon', ...
+  const famiglia = product.famiglia; // es: 'C3.2', 'C5.5', 'C5.5S', ...
+
+  // Casi speciali prima (Confort e Wagon devono vincere sui match di famiglia generica)
+  if (id === 'c32_confort')   return BRACCI_PER_FAMIGLIA['C3.2_CONFORT'];
+  if (id === 'c32s_confort')  return BRACCI_PER_FAMIGLIA['C3.2S_CONFORT'];
+  if (id === 'c55wagon')      return BRACCI_PER_FAMIGLIA['C5.5_WAGON'];
+  if (id === 'c55s_wagon')    return BRACCI_PER_FAMIGLIA['C5.5S_WAGON'];
+  if (id === 'c5wagon')       return BRACCI_PER_FAMIGLIA['C5'];
+  if (id === 'c5xlwagon')     return BRACCI_PER_FAMIGLIA['C5'];
+  if (id === 'c5s_wagon')     return BRACCI_PER_FAMIGLIA['C5S'];
+
+  // Fallback su famiglia
+  return BRACCI_PER_FAMIGLIA[famiglia] || null;
+}
+
+// ─── LOGICA DI SELEZIONE PRODOTTI ─────────────────────────────────────────────
+// Filtra per:
+//   1. pavimentazione (campo p.pavimentazione: 'industriale' | 'non_industriale')
+//   2. veicolo (p.veicoli.includes(veicolo))
+//   3. distanzaMm: bracci.minMm ≤ distanzaMm ≤ bracci.maxMm
+
+function selectProducts(products, pavimentazione, veicolo, distanzaMm) {
+  return products
+    .filter(p => {
+      if (p.pavimentazione !== pavimentazione) return false;
+      if (!p.veicoli.includes(veicolo)) return false;
+      const bracci = getBracciInfo(p);
+      if (!bracci) return false;
+      return distanzaMm >= bracci.minMm && distanzaMm <= bracci.maxMm;
+    })
+    .sort((a, b) => a.prezzoNetto - b.prezzoNetto);
+}
+
+// ─── TIPI VEICOLO — identici a rules.js ──────────────────────────────────────
 
 const VEHICLE_TYPES = [
-  { id: 'micro',     label: 'Micro / Citycar',           icon: '🚗', desc: 'Smart, Mini, Fiat 500 — fino a 3,5 m',       maxKg: 1500 },
-  { id: 'sedan',     label: 'Berlina / Utilitaria',       icon: '🚙', desc: 'Golf, Megane, Punto, Panda — fino a 4,8 m',  maxKg: 2000 },
-  { id: 'cuv',       label: 'CUV / Crossover',            icon: '🚐', desc: 'Qashqai, 2008, Kona — fino a 4,6 m',        maxKg: 2200 },
-  { id: 'suv',       label: 'SUV / Fuoristrada',          icon: '🛻', desc: 'BMW X5, Cayenne, Discovery — oltre 4,6 m',   maxKg: 3000 },
-  { id: 'minivan',   label: 'Monovolume / Minivan',       icon: '🚌', desc: 'Vito, Transit Connect, Berlingo',            maxKg: 2800 },
-  { id: 'van',       label: 'Furgone / Van',              icon: '🚚', desc: 'VW Crafter, Sprinter, Ducato — L3/L4',       maxKg: 3500 },
-  { id: 'minitruck', label: 'Mini Truck / Veicolo Comm.', icon: '🚛', desc: 'Daily, Transit pesante — fino a 5,5 ton',    maxKg: 5500 },
-  { id: 'truck',     label: 'Truck / Furgone Pesante',    icon: '🏗️', desc: 'Veicoli commerciali pesanti — oltre 5 ton',  maxKg: 7000 },
+  { id: 'utilitaria', label: 'Utilitaria',              icon: '🚗', desc: 'Fino a 1.400 Kg — Panda, Polo, C1...' },
+  { id: 'car',        label: 'Car / Berlina',            icon: '🚙', desc: 'Fino a 2.000 Kg — Golf, Focus, 3008...' },
+  { id: 'suv',        label: 'SUV / Fuoristrada',        icon: '🚐', desc: 'Fino a 2.800 Kg — Defender, X5, Grand Cherokee...' },
+  { id: 'van',        label: 'Van / Furgone',            icon: '🚚', desc: 'Fino a 3.500 Kg — Transit, Ducato, Sprinter...' },
+  { id: 'van_lungo',  label: 'Van Lungo / Passo Lungo',  icon: '🚌', desc: 'Fino a 5.000 Kg — Sprinter XL, Crafter L3...' },
+  { id: 'camper',     label: 'Camper / Motorhome',       icon: '🏕️', desc: 'Fino a 5.500 Kg — Camper professionali' },
+  { id: 'truck',      label: 'Truck / Veicolo Pesante',  icon: '🚛', desc: 'Oltre 5.000 Kg — veicoli commerciali pesanti' },
 ];
 
-// ─── TIPI PAVIMENTAZIONE ─────────────────────────────────────────────────────
+// ─── TIPI PAVIMENTAZIONE — identici a rules.js ───────────────────────────────
 
 const FLOOR_TYPES = [
   {
     id: 'industriale',
-    label: 'Pavimento Industriale',
-    desc: 'Cemento livellato, nessun vincolo di altezza pedana',
-    note: 'Senza Pedana',
+    label: 'Industriale',
+    desc: 'Pavimento industriale adatto ad ancoraggio (tasselli diretti)',
+    note: 'Modelli C...S — senza pedana',
     color: 'blue',
   },
   {
-    id: 'standard',
-    label: 'Pavimento Standard / Rivestito',
-    desc: 'Piastrelle, resina, parquet tecnico o piano non perfettamente livellato',
-    note: 'Con Pedana',
+    id: 'non_industriale',
+    label: 'Non Industriale',
+    desc: 'Pavimento normale, piastrellato o non adatto ad ancoraggio diretto',
+    note: 'Modelli C — con pedana',
     color: 'slate',
   },
 ];
 
-// ─── LOGICA DI SELEZIONE PRODOTTI ─────────────────────────────────────────────
-// Parametri:
-//   products       → array prodotti da products.json
-//   pavimentazione → 'industriale' | 'standard'
-//   veicolo        → id da VEHICLE_TYPES
-//   distanzaMm     → distanza minima tra punti di presa (mm), misurata dal cliente
-//
-// La funzione:
-//   1. Filtra per pavimentazione (campo pavimentazione del prodotto)
-//   2. Filtra per categoria veicolo (BRACCI_RULES.veicoli include il veicolo)
-//   3. Filtra per compatibilità mm: braccio.minMm ≤ distanzaMm ≤ braccio.maxMm
-//   4. Ordina: consigliato prima (portata più bassa compatibile = scelta economica)
-
-function selectProducts(products, pavimentazione, veicolo, distanzaMm) {
-  // Trova le regole bracci compatibili con veicolo + distanza
-  const regoleCompatibili = BRACCI_RULES.filter(r => {
-    const veicoloOk = r.veicoli.includes(veicolo);
-    const mmOk = distanzaMm >= r.minMm && distanzaMm <= r.maxMm;
-    return veicoloOk && mmOk;
-  });
-
-  const modelsOk = new Set(regoleCompatibili.map(r => r.modelloKey));
-
-  // Filtra prodotti per pavimentazione + modello compatibile
-  const filtered = products.filter(p => {
-    const pavOk = p.pavimentazione === pavimentazione;
-    // Cerca corrispondenza flessibile: il campo modello del prodotto deve contenere
-    // una delle chiavi compatibili (case-insensitive, senza spazi)
-    const modOk = [...modelsOk].some(key =>
-      p.modello.replace(/\s/g, '').toUpperCase().includes(key.toUpperCase()) ||
-      (p.categoria && p.categoria.replace(/\s/g, '').toUpperCase().includes(key.toUpperCase()))
-    );
-    return pavOk && modOk;
-  });
-
-  // Ordina per prezzo crescente (scelta più economica prima)
-  return filtered.sort((a, b) => a.prezzoNetto - b.prezzoNetto);
-}
-
-function getBracciInfo(product) {
-  // Ritorna la regola bracci corrispondente al prodotto (per mostrare il range nella card)
-  return BRACCI_RULES.find(r =>
-    product.modello.replace(/\s/g, '').toUpperCase().includes(r.modelloKey.toUpperCase()) ||
-    (product.categoria && product.categoria.replace(/\s/g, '').toUpperCase().includes(r.modelloKey.toUpperCase()))
-  ) || null;
-}
-
-// ─── FASCE DISTANZA (slider con preset descrittivi) ──────────────────────────
-// Permette di scegliere la distanza tra i punti di presa con preset pratici
+// ─── PRESET DISTANZA — coerenti con i veicoli reali di rules.js ──────────────
+// mm scelti in modo che almeno un modello nel BRACCI_PER_FAMIGLIA li copra
 
 const DISTANZA_PRESETS = [
-  { mm: 650,  label: '~650 mm',  desc: 'Citycar / Smart',                   veicoli: ['micro'] },
-  { mm: 750,  label: '~750 mm',  desc: 'Utilitaria compatta',                veicoli: ['micro', 'sedan'] },
-  { mm: 850,  label: '~850 mm',  desc: 'Berlina / Compatta media',           veicoli: ['sedan'] },
-  { mm: 950,  label: '~950 mm',  desc: 'Berlina / CUV / Crossover',          veicoli: ['sedan', 'cuv'] },
-  { mm: 1050, label: '~1050 mm', desc: 'SUV compatto / CUV',                 veicoli: ['cuv', 'suv'] },
-  { mm: 1150, label: '~1150 mm', desc: 'SUV medio / Monovolume',             veicoli: ['suv', 'minivan'] },
-  { mm: 1250, label: '~1250 mm', desc: 'SUV grande / Furgone leggero',       veicoli: ['suv', 'van'] },
-  { mm: 1350, label: '~1350 mm', desc: 'Furgone medio (L2/L3)',              veicoli: ['van', 'minivan'] },
-  { mm: 1450, label: '~1450 mm', desc: 'Furgone grande (L3/L4)',             veicoli: ['van', 'minitruck'] },
-  { mm: 1600, label: '~1600 mm', desc: 'Commerciale pesante',                veicoli: ['minitruck', 'truck'] },
-  { mm: 1810, label: '~1810 mm', desc: 'Truck / Pesante lungo',              veicoli: ['truck'] },
+  // utilitaria: C3.2 copre 710–1050, C3.2 Confort 597–1122
+  { mm: 750,  label: '~750 mm',  desc: 'Utilitaria compatta (Panda, C1, Polo)',           veicoli: ['utilitaria'] },
+  { mm: 950,  label: '~950 mm',  desc: 'Utilitaria / Berlina (Punto, Clio, Golf compact)', veicoli: ['utilitaria', 'car'] },
+  // car: C3.2 fino a 1050, C3.2C fino a 1122, C3.5 fino a 1325
+  { mm: 870,  label: '~870 mm',  desc: 'Berlina media (Golf, Focus, 208)',                 veicoli: ['car'] },
+  { mm: 1050, label: '~1050 mm', desc: 'Berlina grande / Wagon (Passat, Octavia)',         veicoli: ['car'] },
+  { mm: 1250, label: '~1250 mm', desc: 'Berlina XL / Car spaziosa',                       veicoli: ['car'] },
+  // suv: C3.2 fino a 1050, C3.5 fino a 1325, C4 fino a 1341
+  { mm: 900,  label: '~900 mm',  desc: 'SUV compatto (Kuga, Qashqai, 2008)',              veicoli: ['suv'] },
+  { mm: 1100, label: '~1100 mm', desc: 'SUV medio (X3, RAV4, Tiguan)',                    veicoli: ['suv'] },
+  { mm: 1300, label: '~1300 mm', desc: 'SUV grande / Fuoristrada (X5, Defender, Grand Cherokee)', veicoli: ['suv'] },
+  // van: C3.2C fino a 1122, C3.5 fino a 1325, C4 fino a 1341
+  { mm: 800,  label: '~800 mm',  desc: 'Van compatto (Berlingo, Connect)',                 veicoli: ['van'] },
+  { mm: 1000, label: '~1000 mm', desc: 'Furgone medio (Ducato L2, Transit L2)',            veicoli: ['van'] },
+  { mm: 1300, label: '~1300 mm', desc: 'Furgone grande (Sprinter L3, Crafter)',            veicoli: ['van'] },
+  // van_lungo: C4 XL 668–1341, C5.5 705–1335, C5.5W 758–1505, C5W 855–1810
+  { mm: 900,  label: '~900 mm',  desc: 'Van lungo leggero (Sprinter L3)',                  veicoli: ['van_lungo'] },
+  { mm: 1200, label: '~1200 mm', desc: 'Van lungo medio (Crafter L4, Transit XL)',         veicoli: ['van_lungo'] },
+  { mm: 1400, label: '~1400 mm', desc: 'Van lungo grande (passo lungo XL)',                veicoli: ['van_lungo'] },
+  { mm: 1700, label: '~1700 mm', desc: 'Van lungo extra — bracci massimi (855→1810mm)',    veicoli: ['van_lungo'] },
+  // camper: C4 668–1341, C5.5W 758–1505, C5W 855–1810
+  { mm: 900,  label: '~900 mm',  desc: 'Camper compatto (base Ducato/Sprinter)',           veicoli: ['camper'] },
+  { mm: 1200, label: '~1200 mm', desc: 'Camper medio',                                     veicoli: ['camper'] },
+  { mm: 1400, label: '~1400 mm', desc: 'Camper grande / Motorhome',                        veicoli: ['camper'] },
+  { mm: 1700, label: '~1700 mm', desc: 'Motorhome XL — bracci max (855→1810mm)',           veicoli: ['camper'] },
+  // truck: C5.5 705–1335, C5.5W 758–1505
+  { mm: 900,  label: '~900 mm',  desc: 'Truck leggero (Daily 35, Transit pesante)',        veicoli: ['truck'] },
+  { mm: 1200, label: '~1200 mm', desc: 'Truck medio',                                      veicoli: ['truck'] },
+  { mm: 1450, label: '~1450 mm', desc: 'Truck pesante — bracci max wagon (758→1505mm)',    veicoli: ['truck'] },
 ];
 
 // ─── HOOKS ───────────────────────────────────────────────────────────────────
@@ -507,10 +477,10 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
     onResult({ pavimentazione, veicolo, distanzaMm: mm, results });
   };
 
-  // Preset filtrati in base al veicolo selezionato (suggerimento)
+  // Preset filtrati per veicolo selezionato (id reali da rules.js)
   const presetsPerVeicolo = DISTANZA_PRESETS.filter(p =>
     !veicolo || p.veicoli.includes(veicolo)
-  );
+  ).filter((p, i, arr) => arr.findIndex(x => x.mm === p.mm && x.desc === p.desc) === i);
 
   return (
     <div className="animate-fade-in space-y-6">
@@ -674,7 +644,7 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
                 </div>
                 <input
                   type="range"
-                  min={580}
+                  min={597}
                   max={1810}
                   step={5}
                   value={sliderVal}
@@ -682,7 +652,7 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
                   className="w-full accent-blue-500"
                 />
                 <div className="flex justify-between text-xs text-slate-500 mt-1">
-                  <span>580 mm</span>
+                  <span>597 mm</span>
                   <span>1810 mm</span>
                 </div>
               </div>
