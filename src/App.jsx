@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import productsData from './data/products.json';
 import {
   ChevronRight, RotateCcw, FileText, ShoppingCart, Building2,
@@ -37,26 +37,26 @@ import * as XLSX from 'xlsx';
 
 const PDF_SCHEDE = {
   // CON PEDANA
-  '13120E':  { file: 'cascos_con_pedana.pdf',    pages: [1, 2] },
-  '13120C':  { file: 'cascos_con_pedana.pdf',    pages: [5, 6] },
-  '13168':   { file: 'cascos_con_pedana.pdf',    pages: [9, 10] },
-  '13191':   { file: 'cascos_con_pedana.pdf',    pages: [11, 12] },
-  '13194':   { file: 'cascos_con_pedana.pdf',    pages: [13, 14] },
-  '13198':   { file: 'cascos_con_pedana.pdf',    pages: [15, 16] },
-  '13176':   { file: 'cascos_con_pedana.pdf',    pages: [17, 18] },
-  '13201':   { file: 'cascos_con_pedana.pdf',    pages: [19, 20] },
-  '13998':   { file: 'cascos_con_pedana.pdf',    pages: [21, 22] },
-  '13988':   { file: 'cascos_con_pedana.pdf',    pages: [23, 24] },
+  '13120E':  { file: 'cascos con pedana.pdf',    pages: [1, 2] },
+  '13120C':  { file: 'cascos con pedana.pdf',    pages: [5, 6] },
+  '13168':   { file: 'cascos con pedana.pdf',    pages: [9, 10] },
+  '13191':   { file: 'cascos con pedana.pdf',    pages: [11, 12] },
+  '13194':   { file: 'cascos con pedana.pdf',    pages: [13, 14] },
+  '13198':   { file: 'cascos con pedana.pdf',    pages: [15, 16] },
+  '13176':   { file: 'cascos con pedana.pdf',    pages: [17, 18] },
+  '13201':   { file: 'cascos con pedana.pdf',    pages: [19, 20] },
+  '13998':   { file: 'cascos con pedana.pdf',    pages: [21, 22] },
+  '13988':   { file: 'cascos con pedana.pdf',    pages: [23, 24] },
   // SENZA PEDANA
-  '13120SE': { file: 'cascos_senza_pedana.pdf',  pages: [1, 2] },
-  '13120SC': { file: 'cascos_senza_pedana.pdf',  pages: [5, 6] },
-  '13169':   { file: 'cascos_senza_pedana.pdf',  pages: [7, 8] },
-  '13194S':  { file: 'cascos_senza_pedana.pdf',  pages: [9, 10] },
-  '13192':   { file: 'cascos_senza_pedana.pdf',  pages: [11, 12] },
-  '13198S':  { file: 'cascos_senza_pedana.pdf',  pages: [13, 14] },
-  '13998S':  { file: 'cascos_senza_pedana.pdf',  pages: [15, 16] },
-  '13177':   { file: 'cascos_senza_pedana.pdf',  pages: [17, 18] },
-  '13988S':  { file: 'cascos_senza_pedana.pdf',  pages: [19, 20] },
+  '13120SE': { file: 'cascos senza pedana.pdf',  pages: [1, 2] },
+  '13120SC': { file: 'cascos senza pedana.pdf',  pages: [5, 6] },
+  '13169':   { file: 'cascos senza pedana.pdf',  pages: [7, 8] },
+  '13194S':  { file: 'cascos senza pedana.pdf',  pages: [9, 10] },
+  '13192':   { file: 'cascos senza pedana.pdf',  pages: [11, 12] },
+  '13198S':  { file: 'cascos senza pedana.pdf',  pages: [13, 14] },
+  '13998S':  { file: 'cascos senza pedana.pdf',  pages: [15, 16] },
+  '13177':   { file: 'cascos senza pedana.pdf',  pages: [17, 18] },
+  '13988S':  { file: 'cascos senza pedana.pdf',  pages: [19, 20] },
 };
 
 // Cache dei PDF fetchati (evita doppio download per stesso file)
@@ -75,9 +75,12 @@ async function getPdfLib() {
 
 async function fetchPdfBytes(fileName) {
   if (pdfCache[fileName]) return pdfCache[fileName];
-  // In produzione i PDF sono nella stessa cartella dell'app (public/assets o root)
-  const response = await fetch(`./${fileName}`);
-  if (!response.ok) throw new Error(`PDF non trovato: ${fileName}`);
+  // import.meta.env.BASE_URL = '/quoteflow-pro-cascos/' in produzione Vite
+  // I PDF devono essere nella cartella public/ del progetto.
+  const base = import.meta.env.BASE_URL || '/';
+  const url = base.endsWith('/') ? `${base}${fileName}` : `${base}/${fileName}`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`PDF non trovato: ${fileName} (URL: ${url})`);
   const bytes = await response.arrayBuffer();
   pdfCache[fileName] = bytes;
   return bytes;
@@ -122,8 +125,11 @@ async function downloadSchedaTecnica(codice) {
   const a = document.createElement('a');
   a.href = url;
   a.download = fileName;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+  // Revoca dopo 1s: il browser ha bisogno di tempo per avviare il download
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /**
@@ -131,10 +137,20 @@ async function downloadSchedaTecnica(codice) {
  * file va scaricato prima; qui forniamo un link per aprire/visualizzare).
  */
 async function openSchedaTecnica(codice) {
-  const { bytes, fileName } = await extractSchedaTecnica(codice);
-  const blob = new Blob([bytes], { type: 'application/pdf' });
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank', 'noopener');
+  // Apre la tab PRIMA delle operazioni async: i browser bloccano
+  // window.open() se chiamato dopo un await (non più nel contesto del click).
+  const newTab = window.open('', '_blank', 'noopener');
+  if (!newTab) throw new Error('Popup bloccato. Usa il pulsante Scarica.');
+  try {
+    const { bytes } = await extractSchedaTecnica(codice);
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    newTab.location.href = url;
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (err) {
+    newTab.close();
+    throw err;
+  }
 }
 
 // ─── DATI BRACCI DAL PDF ──────────────────────────────────────────────────────
