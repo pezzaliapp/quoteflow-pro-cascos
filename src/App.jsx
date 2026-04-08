@@ -1,9 +1,9 @@
 import { useState, useCallback } from 'react';
 import productsData from './data/products.json';
 import {
-  ChevronRight, RotateCcw, FileText, ShoppingCart, Building2,
-  Truck, MessageCircle, Copy, CheckCircle2, ArrowLeft, AlertCircle, Upload,
-  Package, Euro, Gauge, Wrench, Ruler, Download, BookOpen, ExternalLink
+  ChevronRight, RotateCcw, FileText, ShoppingCart,
+  MessageCircle, Copy, CheckCircle2, ArrowLeft, AlertCircle, Upload,
+  Package, Euro, Wrench, Ruler, Download, BookOpen
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -75,8 +75,7 @@ async function getPdfLib() {
 
 async function fetchPdfBytes(fileName) {
   if (pdfCache[fileName]) return pdfCache[fileName];
-  // import.meta.env.BASE_URL risolve il base path Vite correttamente in produzione
-  // es. con base: '/quoteflow-pro-cascos/' → '/quoteflow-pro-cascos/cascos con pedana.pdf'
+  // import.meta.env.BASE_URL = '/quoteflow-pro-cascos/' in produzione Vite.
   // I PDF devono essere nella cartella public/ del progetto Vite.
   const base = import.meta.env.BASE_URL || '/';
   const url = base.endsWith('/') ? `${base}${fileName}` : `${base}/${fileName}`;
@@ -90,26 +89,22 @@ async function fetchPdfBytes(fileName) {
 async function extractSchedaTecnica(codice) {
   const mapping = PDF_SCHEDE[codice];
   if (!mapping) throw new Error(`Nessuna scheda tecnica per codice ${codice}`);
-
   const PDFLib = await getPdfLib();
   const { PDFDocument } = PDFLib;
-
   const srcBytes = await fetchPdfBytes(mapping.file);
   const srcDoc = await PDFDocument.load(srcBytes);
   const newDoc = await PDFDocument.create();
-
   for (const pageNum of mapping.pages) {
     const [page] = await newDoc.copyPages(srcDoc, [pageNum - 1]);
     newDoc.addPage(page);
   }
-
   const newBytes = await newDoc.save();
-  return {
-    bytes: newBytes,
-    fileName: `Cascos_${codice}_SchedaTecnica.pdf`,
-  };
+  return { bytes: newBytes, fileName: `Cascos_${codice}_SchedaTecnica.pdf` };
 }
 
+// Unica azione esposta: scarica il PDF estratto.
+// "Apri in tab" rimosso: Chrome blocca blob URL su tab aperta programmaticamente.
+// Il download funziona in tutti i browser senza restrizioni.
 async function downloadSchedaTecnica(codice) {
   const { bytes, fileName } = await extractSchedaTecnica(codice);
   const blob = new Blob([bytes], { type: 'application/pdf' });
@@ -120,33 +115,7 @@ async function downloadSchedaTecnica(codice) {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  // Revoca dopo 1s: il browser ha bisogno di tempo per avviare il download
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-async function openSchedaTecnica(codice) {
-  // window.open() PRIMA dell'async: i browser bloccano i popup aperti dopo un await.
-  // Non usare 'noopener': serve accesso a newTab.document per scrivere il PDF.
-  const newTab = window.open('', '_blank');
-  if (!newTab) throw new Error('Popup bloccato. Usa il pulsante Scarica.');
-  try {
-    const { bytes, fileName } = await extractSchedaTecnica(codice);
-    const blob = new Blob([bytes], { type: 'application/pdf' });
-    const url = URL.createObjectURL(blob);
-    // document.write con <embed>: unico metodo affidabile cross-browser
-    // per mostrare un blob PDF in una tab aperta programmaticamente.
-    newTab.document.write(
-      `<!DOCTYPE html><html><head><title>${fileName}</title></head>` +
-      `<body style="margin:0;padding:0;height:100vh;background:#404040">` +
-      `<embed src="${url}" type="application/pdf" width="100%" height="100%" />` +
-      `</body></html>`
-    );
-    newTab.document.close();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-  } catch (err) {
-    newTab.close();
-    throw err;
-  }
 }
 
 // ─── DATI BRACCI DAL PDF ──────────────────────────────────────────────────────
@@ -401,74 +370,45 @@ function SchedaTecnicaButton({ codice, modello, compact = false }) {
     }
   };
 
-  const handleOpen = async () => {
-    setStato('loading');
-    setErrorMsg('');
-    try {
-      await openSchedaTecnica(codice);
-      setStato('done');
-      setTimeout(() => setStato('idle'), 2000);
-    } catch (err) {
-      console.error(err);
-      setErrorMsg(err.message || 'PDF non disponibile');
-      setStato('error');
-      setTimeout(() => setStato('idle'), 4000);
-    }
-  };
+  const label = stato === 'loading' ? 'Preparazione…'
+              : stato === 'done'    ? '✓ Scaricato'
+              : stato === 'error'   ? '✗ Errore'
+              : 'Scarica Scheda PDF';
 
   if (compact) {
     return (
-      <div className="flex gap-1.5 items-center">
-        <button
-          onClick={handleOpen}
-          disabled={stato === 'loading'}
-          title={`Apri scheda tecnica ${modello}`}
-          className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 transition-colors disabled:opacity-50"
-        >
-          <BookOpen size={12} />
-          {stato === 'loading' ? 'Caricamento…' : stato === 'done' ? '✓ Aperto' : stato === 'error' ? '✗ Errore' : 'Scheda PDF'}
-        </button>
-        <span className="text-slate-700">|</span>
+      <div className="flex flex-col gap-1">
         <button
           onClick={handleDownload}
           disabled={stato === 'loading'}
-          title={`Scarica scheda tecnica ${modello}`}
           className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 transition-colors disabled:opacity-50"
         >
           <Download size={12} />
-          Scarica
+          {label}
         </button>
+        {stato === 'error' && errorMsg && (
+          <span className="text-xs text-red-400">{errorMsg}</span>
+        )}
       </div>
     );
   }
 
   return (
     <div className="space-y-1">
-      <div className="flex gap-2">
-        <button
-          onClick={handleOpen}
-          disabled={stato === 'loading'}
-          className="flex-1 flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition-all
-            bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/30 text-sky-300 hover:text-sky-200 disabled:opacity-50"
-        >
-          <BookOpen size={15} />
-          {stato === 'loading' ? 'Caricamento PDF…' : stato === 'done' ? '✓ Aperto' : stato === 'error' ? '✗ Non trovato' : 'Apri Scheda Tecnica'}
-        </button>
-        <button
-          onClick={handleDownload}
-          disabled={stato === 'loading'}
-          className="flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium transition-all
-            bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/30 text-sky-300 hover:text-sky-200 disabled:opacity-50"
-          title="Scarica PDF scheda tecnica"
-        >
-          <Download size={15} />
-        </button>
-      </div>
+      <button
+        onClick={handleDownload}
+        disabled={stato === 'loading'}
+        className="w-full flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition-all
+          bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/30 text-sky-300 hover:text-sky-200 disabled:opacity-50"
+      >
+        <Download size={15} />
+        {label}
+      </button>
       {stato === 'error' && errorMsg && (
         <p className="text-xs text-red-400 px-1">{errorMsg}</p>
       )}
       <p className="text-xs text-slate-600 px-1">
-        PDF estratto dal catalogo ufficiale Cascos · {PDF_SCHEDE[codice]?.file?.replace('.pdf','').replace(/_/g,' ')}
+        Depliant ufficiale Cascos estratto dal catalogo · 2 pagine
       </p>
     </div>
   );
