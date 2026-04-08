@@ -1,30 +1,147 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import productsData from './data/products.json';
 import {
   ChevronRight, RotateCcw, FileText, ShoppingCart, Building2,
   Truck, MessageCircle, Copy, CheckCircle2, ArrowLeft, AlertCircle, Upload,
-  Package, Euro, Gauge, Wrench, Ruler
+  Package, Euro, Gauge, Wrench, Ruler, Download, BookOpen, ExternalLink
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
-// ─── DATI BRACCI DAL PDF — mappati su famiglia reale di products.json ────────
+// ─── PDF SCHEDE TECNICHE — mappa codice → {file, pages (1-indexed)} ──────────
 //
-// Fonte primaria range mm: noteTecniche in products.json (es. "710→1050mm")
-// Fonte secondaria: PDF MISURE_GENERALI_BRACCI_TIPO_VEICOLI
+// cascos_con_pedana.pdf (con pedana, modelli senza "S"):
+//   p.1-2  → C3.2         (13120E)
+//   p.3-4  → C3.2 Monofasici (13183E) — non in products.json, skip
+//   p.5-6  → C3.2 Comfort  (13120C)
+//   p.7-8  → C3.2 Comfort Monofasici (13183C) — skip
+//   p.9-10 → C3.5         (13168)
+//   p.11-12→ C3.5XL       (13191)
+//   p.13-14→ C4            (13194)
+//   p.15-16→ C4XL          (13198)
+//   p.17-18→ C5 Wagon      (13176)
+//   p.19-20→ C5XL Wagon    (13201)
+//   p.21-22→ C5.5          (13998)
+//   p.23-24→ C5.5 Wagon    (13988)
 //
-// famiglia (products.json) → range bracci reali
-//   C3.2 / C3.2S       → 710–1050  (bracci doppi standard)
-//   C3.2 Confort        → 597–1122  (2 triple + 2 doppie, range esteso)
-//   C3.5 / C3.5S       → 690–1325
-//   C4  / C4S          → 668–1341
-//   C5.5 / C5.5S       → 705–1335
-//   C5.5 Wagon / C5.5S Wagon → 758–1505
-//   C5 Wagon / C5S     → 855–1810
+// cascos_senza_pedana.pdf (senza pedana, modelli con "S"):
+//   p.1-2  → C3.2S        (13120SE)
+//   p.3-4  → C3.2S Sport  (13120SS) — non in products.json, skip
+//   p.5-6  → C3.2S Confort(13120SC)
+//   p.7-8  → C3.5S        (13169)
+//   p.9-10 → C4S          (13194S)
+//   p.11-12→ C3.5S XL     (13192)
+//   p.13-14→ C4S XL       (13198S)
+//   p.15-16→ C5.5S        (13998S)
+//   p.17-18→ C5S Wagon    (13177)
+//   p.19-20→ C5.5S Wagon  (13988S)
+
+const PDF_SCHEDE = {
+  // CON PEDANA
+  '13120E':  { file: 'cascos_con_pedana.pdf',    pages: [1, 2] },
+  '13120C':  { file: 'cascos_con_pedana.pdf',    pages: [5, 6] },
+  '13168':   { file: 'cascos_con_pedana.pdf',    pages: [9, 10] },
+  '13191':   { file: 'cascos_con_pedana.pdf',    pages: [11, 12] },
+  '13194':   { file: 'cascos_con_pedana.pdf',    pages: [13, 14] },
+  '13198':   { file: 'cascos_con_pedana.pdf',    pages: [15, 16] },
+  '13176':   { file: 'cascos_con_pedana.pdf',    pages: [17, 18] },
+  '13201':   { file: 'cascos_con_pedana.pdf',    pages: [19, 20] },
+  '13998':   { file: 'cascos_con_pedana.pdf',    pages: [21, 22] },
+  '13988':   { file: 'cascos_con_pedana.pdf',    pages: [23, 24] },
+  // SENZA PEDANA
+  '13120SE': { file: 'cascos_senza_pedana.pdf',  pages: [1, 2] },
+  '13120SC': { file: 'cascos_senza_pedana.pdf',  pages: [5, 6] },
+  '13169':   { file: 'cascos_senza_pedana.pdf',  pages: [7, 8] },
+  '13194S':  { file: 'cascos_senza_pedana.pdf',  pages: [9, 10] },
+  '13192':   { file: 'cascos_senza_pedana.pdf',  pages: [11, 12] },
+  '13198S':  { file: 'cascos_senza_pedana.pdf',  pages: [13, 14] },
+  '13998S':  { file: 'cascos_senza_pedana.pdf',  pages: [15, 16] },
+  '13177':   { file: 'cascos_senza_pedana.pdf',  pages: [17, 18] },
+  '13988S':  { file: 'cascos_senza_pedana.pdf',  pages: [19, 20] },
+};
+
+// Cache dei PDF fetchati (evita doppio download per stesso file)
+const pdfCache = {};
+
+async function getPdfLib() {
+  if (window.PDFLib) return window.PDFLib;
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js';
+    s.onload = () => resolve(window.PDFLib);
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+async function fetchPdfBytes(fileName) {
+  if (pdfCache[fileName]) return pdfCache[fileName];
+  // In produzione i PDF sono nella stessa cartella dell'app (public/assets o root)
+  const response = await fetch(`./${fileName}`);
+  if (!response.ok) throw new Error(`PDF non trovato: ${fileName}`);
+  const bytes = await response.arrayBuffer();
+  pdfCache[fileName] = bytes;
+  return bytes;
+}
+
+/**
+ * Estrae le pagine specifiche dal PDF sorgente e restituisce un Uint8Array.
+ * @param {string} codice - codice prodotto (es. '13120E')
+ * @returns {Promise<{bytes: Uint8Array, fileName: string}>}
+ */
+async function extractSchedaTecnica(codice) {
+  const mapping = PDF_SCHEDE[codice];
+  if (!mapping) throw new Error(`Nessuna scheda tecnica per codice ${codice}`);
+
+  const PDFLib = await getPdfLib();
+  const { PDFDocument } = PDFLib;
+
+  const srcBytes = await fetchPdfBytes(mapping.file);
+  const srcDoc = await PDFDocument.load(srcBytes);
+  const newDoc = await PDFDocument.create();
+
+  // pages è 1-indexed
+  for (const pageNum of mapping.pages) {
+    const [page] = await newDoc.copyPages(srcDoc, [pageNum - 1]);
+    newDoc.addPage(page);
+  }
+
+  const newBytes = await newDoc.save();
+  return {
+    bytes: newBytes,
+    fileName: `Cascos_${codice}_SchedaTecnica.pdf`,
+  };
+}
+
+/**
+ * Scarica il PDF estratto come file.
+ */
+async function downloadSchedaTecnica(codice) {
+  const { bytes, fileName } = await extractSchedaTecnica(codice);
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Apre il PDF estratto in una nuova tab (per condivisione WhatsApp il
+ * file va scaricato prima; qui forniamo un link per aprire/visualizzare).
+ */
+async function openSchedaTecnica(codice) {
+  const { bytes, fileName } = await extractSchedaTecnica(codice);
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+}
+
+// ─── DATI BRACCI DAL PDF ──────────────────────────────────────────────────────
 
 const BRACCI_PER_FAMIGLIA = {
   'C3.2':    { minMm: 710,  maxMm: 1050, note: 'Bracci doppi — utilitarie e citycar' },
   'C3.2S':   { minMm: 710,  maxMm: 1050, note: 'Bracci doppi — utilitarie e citycar' },
-  // Confort: identificato dall'id specifico
   'C3.2_CONFORT':  { minMm: 597, maxMm: 1122, note: '2 braccia triple + 2 doppie — range esteso' },
   'C3.2S_CONFORT': { minMm: 597, maxMm: 1122, note: '2 braccia triple + 2 doppie — range esteso' },
   'C3.5':    { minMm: 690,  maxMm: 1325, note: '4 braccia triple' },
@@ -33,20 +150,15 @@ const BRACCI_PER_FAMIGLIA = {
   'C4S':     { minMm: 668,  maxMm: 1341, note: '4 braccia triple — senza pedana' },
   'C5.5':    { minMm: 705,  maxMm: 1335, note: 'Doppio gioco supporti 60-100mm' },
   'C5.5S':   { minMm: 705,  maxMm: 1335, note: 'Doppio gioco supporti 60-100mm — senza pedana' },
-  // Wagon C5.5: famiglia 'C5.5' ma id contiene 'wagon'
   'C5.5_WAGON':  { minMm: 758, maxMm: 1505, note: 'Bracci extra-lunghi — grandi furgoni' },
   'C5.5S_WAGON': { minMm: 758, maxMm: 1505, note: 'Bracci extra-lunghi — senza pedana' },
-  // C5 Wagon
   'C5':      { minMm: 855,  maxMm: 1810, note: 'Bracci extra-lunghi — passo lungo' },
   'C5S':     { minMm: 855,  maxMm: 1810, note: 'Bracci extra-lunghi — senza pedana' },
 };
 
-// Ritorna il range bracci per un prodotto dato il suo record completo
 function getBracciInfo(product) {
-  const id = product.id; // es: 'c32', 'c32_confort', 'c55wagon', 'c55s_wagon', ...
-  const famiglia = product.famiglia; // es: 'C3.2', 'C5.5', 'C5.5S', ...
-
-  // Casi speciali prima (Confort e Wagon devono vincere sui match di famiglia generica)
+  const id = product.id;
+  const famiglia = product.famiglia;
   if (id === 'c32_confort')   return BRACCI_PER_FAMIGLIA['C3.2_CONFORT'];
   if (id === 'c32s_confort')  return BRACCI_PER_FAMIGLIA['C3.2S_CONFORT'];
   if (id === 'c55wagon')      return BRACCI_PER_FAMIGLIA['C5.5_WAGON'];
@@ -54,16 +166,10 @@ function getBracciInfo(product) {
   if (id === 'c5wagon')       return BRACCI_PER_FAMIGLIA['C5'];
   if (id === 'c5xlwagon')     return BRACCI_PER_FAMIGLIA['C5'];
   if (id === 'c5s_wagon')     return BRACCI_PER_FAMIGLIA['C5S'];
-
-  // Fallback su famiglia
   return BRACCI_PER_FAMIGLIA[famiglia] || null;
 }
 
-// ─── LOGICA DI SELEZIONE PRODOTTI ─────────────────────────────────────────────
-// Filtra per:
-//   1. pavimentazione (campo p.pavimentazione: 'industriale' | 'non_industriale')
-//   2. veicolo (p.veicoli.includes(veicolo))
-//   3. distanzaMm: bracci.minMm ≤ distanzaMm ≤ bracci.maxMm
+// ─── LOGICA DI SELEZIONE ──────────────────────────────────────────────────────
 
 function selectProducts(products, pavimentazione, veicolo, distanzaMm) {
   return products
@@ -77,7 +183,7 @@ function selectProducts(products, pavimentazione, veicolo, distanzaMm) {
     .sort((a, b) => a.prezzoNetto - b.prezzoNetto);
 }
 
-// ─── TIPI VEICOLO — identici a rules.js ──────────────────────────────────────
+// ─── TIPI VEICOLO ─────────────────────────────────────────────────────────────
 
 const VEHICLE_TYPES = [
   { id: 'utilitaria', label: 'Utilitaria',              icon: '🚗', desc: 'Fino a 1.400 Kg — Panda, Polo, C1...' },
@@ -89,55 +195,31 @@ const VEHICLE_TYPES = [
   { id: 'truck',      label: 'Truck / Veicolo Pesante',  icon: '🚛', desc: 'Oltre 5.000 Kg — veicoli commerciali pesanti' },
 ];
 
-// ─── TIPI PAVIMENTAZIONE — identici a rules.js ───────────────────────────────
-
 const FLOOR_TYPES = [
-  {
-    id: 'industriale',
-    label: 'Industriale',
-    desc: 'Pavimento industriale adatto ad ancoraggio (tasselli diretti)',
-    note: 'Modelli C...S — senza pedana',
-    color: 'blue',
-  },
-  {
-    id: 'non_industriale',
-    label: 'Non Industriale',
-    desc: 'Pavimento normale, piastrellato o non adatto ad ancoraggio diretto',
-    note: 'Modelli C — con pedana',
-    color: 'slate',
-  },
+  { id: 'industriale',     label: 'Industriale',     desc: 'Pavimento industriale adatto ad ancoraggio (tasselli diretti)', note: 'Modelli C...S — senza pedana', color: 'blue' },
+  { id: 'non_industriale', label: 'Non Industriale', desc: 'Pavimento normale, piastrellato o non adatto ad ancoraggio diretto', note: 'Modelli C — con pedana', color: 'slate' },
 ];
 
-// ─── PRESET DISTANZA — coerenti con i veicoli reali di rules.js ──────────────
-// mm scelti in modo che almeno un modello nel BRACCI_PER_FAMIGLIA li copra
-
 const DISTANZA_PRESETS = [
-  // utilitaria: C3.2 copre 710–1050, C3.2 Confort 597–1122
   { mm: 750,  label: '~750 mm',  desc: 'Utilitaria compatta (Panda, C1, Polo)',           veicoli: ['utilitaria'] },
   { mm: 950,  label: '~950 mm',  desc: 'Utilitaria / Berlina (Punto, Clio, Golf compact)', veicoli: ['utilitaria', 'car'] },
-  // car: C3.2 fino a 1050, C3.2C fino a 1122, C3.5 fino a 1325
   { mm: 870,  label: '~870 mm',  desc: 'Berlina media (Golf, Focus, 208)',                 veicoli: ['car'] },
   { mm: 1050, label: '~1050 mm', desc: 'Berlina grande / Wagon (Passat, Octavia)',         veicoli: ['car'] },
   { mm: 1250, label: '~1250 mm', desc: 'Berlina XL / Car spaziosa',                       veicoli: ['car'] },
-  // suv: C3.2 fino a 1050, C3.5 fino a 1325, C4 fino a 1341
   { mm: 900,  label: '~900 mm',  desc: 'SUV compatto (Kuga, Qashqai, 2008)',              veicoli: ['suv'] },
   { mm: 1100, label: '~1100 mm', desc: 'SUV medio (X3, RAV4, Tiguan)',                    veicoli: ['suv'] },
   { mm: 1300, label: '~1300 mm', desc: 'SUV grande / Fuoristrada (X5, Defender, Grand Cherokee)', veicoli: ['suv'] },
-  // van: C3.2C fino a 1122, C3.5 fino a 1325, C4 fino a 1341
   { mm: 800,  label: '~800 mm',  desc: 'Van compatto (Berlingo, Connect)',                 veicoli: ['van'] },
   { mm: 1000, label: '~1000 mm', desc: 'Furgone medio (Ducato L2, Transit L2)',            veicoli: ['van'] },
   { mm: 1300, label: '~1300 mm', desc: 'Furgone grande (Sprinter L3, Crafter)',            veicoli: ['van'] },
-  // van_lungo: C4 XL 668–1341, C5.5 705–1335, C5.5W 758–1505, C5W 855–1810
   { mm: 900,  label: '~900 mm',  desc: 'Van lungo leggero (Sprinter L3)',                  veicoli: ['van_lungo'] },
   { mm: 1200, label: '~1200 mm', desc: 'Van lungo medio (Crafter L4, Transit XL)',         veicoli: ['van_lungo'] },
   { mm: 1400, label: '~1400 mm', desc: 'Van lungo grande (passo lungo XL)',                veicoli: ['van_lungo'] },
   { mm: 1700, label: '~1700 mm', desc: 'Van lungo extra — bracci massimi (855→1810mm)',    veicoli: ['van_lungo'] },
-  // camper: C4 668–1341, C5.5W 758–1505, C5W 855–1810
   { mm: 900,  label: '~900 mm',  desc: 'Camper compatto (base Ducato/Sprinter)',           veicoli: ['camper'] },
   { mm: 1200, label: '~1200 mm', desc: 'Camper medio',                                     veicoli: ['camper'] },
   { mm: 1400, label: '~1400 mm', desc: 'Camper grande / Motorhome',                        veicoli: ['camper'] },
   { mm: 1700, label: '~1700 mm', desc: 'Motorhome XL — bracci max (855→1810mm)',           veicoli: ['camper'] },
-  // truck: C5.5 705–1335, C5.5W 758–1505
   { mm: 900,  label: '~900 mm',  desc: 'Truck leggero (Daily 35, Transit pesante)',        veicoli: ['truck'] },
   { mm: 1200, label: '~1200 mm', desc: 'Truck medio',                                      veicoli: ['truck'] },
   { mm: 1450, label: '~1450 mm', desc: 'Truck pesante — bracci max wagon (758→1505mm)',    veicoli: ['truck'] },
@@ -193,6 +275,7 @@ function useProducts() {
 }
 
 // ─── FORMATTERS ──────────────────────────────────────────────────────────────
+
 const formatPrice = (n) =>
   new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', minimumFractionDigits: 0 }).format(n);
 
@@ -261,6 +344,7 @@ function Badge({ text, color = 'blue' }) {
     amber:  'bg-amber-500/20 text-amber-300 border border-amber-500/30',
     slate:  'bg-slate-500/20 text-slate-300 border border-slate-500/30',
     violet: 'bg-violet-500/20 text-violet-300 border border-violet-500/30',
+    red:    'bg-red-500/20 text-red-300 border border-red-500/30',
   }[color] || 'bg-blue-500/20 text-blue-300';
   return <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${cls}`}>{text}</span>;
 }
@@ -281,15 +365,114 @@ function StepIndicator({ current, total = 4 }) {
   );
 }
 
+// ─── SCHEDA TECNICA BUTTON ────────────────────────────────────────────────────
+
+function SchedaTecnicaButton({ codice, modello, compact = false }) {
+  const [stato, setStato] = useState('idle'); // idle | loading | done | error
+  const [errorMsg, setErrorMsg] = useState('');
+  const hasPdf = !!PDF_SCHEDE[codice];
+
+  if (!hasPdf) return null;
+
+  const handleDownload = async () => {
+    setStato('loading');
+    setErrorMsg('');
+    try {
+      await downloadSchedaTecnica(codice);
+      setStato('done');
+      setTimeout(() => setStato('idle'), 3000);
+    } catch (err) {
+      console.error(err);
+      setErrorMsg(err.message || 'Errore download PDF');
+      setStato('error');
+      setTimeout(() => setStato('idle'), 4000);
+    }
+  };
+
+  const handleOpen = async () => {
+    setStato('loading');
+    setErrorMsg('');
+    try {
+      await openSchedaTecnica(codice);
+      setStato('done');
+      setTimeout(() => setStato('idle'), 2000);
+    } catch (err) {
+      console.error(err);
+      setErrorMsg(err.message || 'PDF non disponibile');
+      setStato('error');
+      setTimeout(() => setStato('idle'), 4000);
+    }
+  };
+
+  if (compact) {
+    return (
+      <div className="flex gap-1.5 items-center">
+        <button
+          onClick={handleOpen}
+          disabled={stato === 'loading'}
+          title={`Apri scheda tecnica ${modello}`}
+          className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 transition-colors disabled:opacity-50"
+        >
+          <BookOpen size={12} />
+          {stato === 'loading' ? 'Caricamento…' : stato === 'done' ? '✓ Aperto' : stato === 'error' ? '✗ Errore' : 'Scheda PDF'}
+        </button>
+        <span className="text-slate-700">|</span>
+        <button
+          onClick={handleDownload}
+          disabled={stato === 'loading'}
+          title={`Scarica scheda tecnica ${modello}`}
+          className="flex items-center gap-1 text-xs text-sky-400 hover:text-sky-300 transition-colors disabled:opacity-50"
+        >
+          <Download size={12} />
+          Scarica
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="flex gap-2">
+        <button
+          onClick={handleOpen}
+          disabled={stato === 'loading'}
+          className="flex-1 flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium transition-all
+            bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/30 text-sky-300 hover:text-sky-200 disabled:opacity-50"
+        >
+          <BookOpen size={15} />
+          {stato === 'loading' ? 'Caricamento PDF…' : stato === 'done' ? '✓ Aperto' : stato === 'error' ? '✗ Non trovato' : 'Apri Scheda Tecnica'}
+        </button>
+        <button
+          onClick={handleDownload}
+          disabled={stato === 'loading'}
+          className="flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium transition-all
+            bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/30 text-sky-300 hover:text-sky-200 disabled:opacity-50"
+          title="Scarica PDF scheda tecnica"
+        >
+          <Download size={15} />
+        </button>
+      </div>
+      {stato === 'error' && errorMsg && (
+        <p className="text-xs text-red-400 px-1">{errorMsg}</p>
+      )}
+      <p className="text-xs text-slate-600 px-1">
+        PDF estratto dal catalogo ufficiale Cascos · {PDF_SCHEDE[codice]?.file?.replace('.pdf','').replace(/_/g,' ')}
+      </p>
+    </div>
+  );
+}
+
+// ─── PRODUCT CARD ─────────────────────────────────────────────────────────────
+
 function ProductCard({ product, isRecommended, onSelect, mode }) {
   const floorLabel = product.pavimentazione === 'industriale' ? 'Pav. Industriale' : 'Pav. Standard';
   const floorColor = product.pavimentazione === 'industriale' ? 'blue' : 'slate';
   const bracciInfo = getBracciInfo(product);
+  const hasPdf = !!PDF_SCHEDE[product.codice];
 
   return (
     <div
-      onClick={() => onSelect(product)}
-      className={`relative rounded-xl p-5 cursor-pointer transition-all duration-200 animate-slide-up
+      className={`relative rounded-xl p-5 transition-all duration-200 animate-slide-up
         ${isRecommended
           ? 'glass border-blue-500/50 ring-1 ring-blue-500/30 hover:ring-blue-400/60'
           : 'glass hover:border-slate-500/60'} glass-hover`}
@@ -318,9 +501,9 @@ function ProductCard({ product, isRecommended, onSelect, mode }) {
         <Badge text={product.portata} color="green" />
         <Badge text={floorLabel} color={floorColor} />
         <Badge text={product.categoria} color="amber" />
+        {hasPdf && <Badge text="📄 Scheda PDF" color="slate" />}
       </div>
 
-      {/* Range bracci dal PDF */}
       {bracciInfo && (
         <div className="flex items-center gap-2 text-xs text-violet-300 bg-violet-500/10 border border-violet-500/20 rounded-lg px-3 py-2 mb-3">
           <Ruler size={13} className="flex-shrink-0" />
@@ -331,12 +514,22 @@ function ProductCard({ product, isRecommended, onSelect, mode }) {
         </div>
       )}
 
-      <div className="text-xs text-slate-500 border-t border-slate-700 pt-3">
+      <div className="text-xs text-slate-500 border-t border-slate-700 pt-3 mb-3">
         {product.noteTecniche}
       </div>
 
-      <div className="mt-3 flex justify-end">
-        <button className="flex items-center gap-1.5 text-sm text-blue-400 hover:text-blue-300 font-medium transition-colors">
+      {/* Scheda tecnica compact (nella card risultati) */}
+      {hasPdf && (
+        <div className="border-t border-slate-700/50 pt-3 mb-3">
+          <SchedaTecnicaButton codice={product.codice} modello={product.modello} compact />
+        </div>
+      )}
+
+      <div className="flex justify-end">
+        <button
+          onClick={() => onSelect(product)}
+          className="flex items-center gap-1.5 text-sm text-blue-400 hover:text-blue-300 font-medium transition-colors"
+        >
           {mode === 'order' ? <ShoppingCart size={14} /> : <FileText size={14} />}
           {mode === 'order' ? 'Crea Ordine' : 'Crea Preventivo'}
           <ChevronRight size={14} />
@@ -356,55 +549,37 @@ function DashboardView({ onStart, onImport, importStatus }) {
   };
 
   return (
-    <div className="animate-fade-in space-y-8">
-      <div className="text-center pt-4">
-        <h1 className="text-3xl sm:text-4xl font-bold text-white mb-3">
-          <span className="text-gradient">QuoteFlow Pro</span>
-        </h1>
-        <p className="text-slate-400 text-base max-w-md mx-auto">
-          Configura il sollevatore Cascos corretto e genera preventivi e ordini in pochi secondi.
-        </p>
+    <div className="space-y-6 animate-fade-in">
+      <div className="space-y-1">
+        <h1 className="text-2xl font-bold text-white">Cascos Lifts</h1>
+        <p className="text-slate-400 text-sm">Configuratore preventivi e ordini — Cormach Srl</p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 gap-4">
         <button
           onClick={() => onStart('quote')}
-          className="glass glass-hover rounded-2xl p-6 text-left group transition-all duration-200 hover:scale-[1.02]"
+          className="glass glass-hover rounded-xl p-5 text-left hover:scale-[1.02] transition-all"
         >
-          <div className="w-12 h-12 rounded-xl bg-blue-600 flex items-center justify-center mb-4 group-hover:bg-blue-500 transition-colors">
-            <FileText size={22} className="text-white" />
-          </div>
-          <div className="text-xl font-bold text-white mb-1">Nuovo Preventivo</div>
-          <div className="text-sm text-slate-400">
-            Guida rapida: seleziona pavimentazione, veicolo e misura bracci — ottieni il modello corretto.
-          </div>
-          <div className="mt-4 flex items-center gap-1 text-blue-400 text-sm font-medium">
-            Inizia <ChevronRight size={16} />
-          </div>
+          <FileText size={22} className="text-blue-400 mb-3" />
+          <div className="font-bold text-white mb-1">Preventivo</div>
+          <div className="text-xs text-slate-400">Crea un preventivo per il cliente</div>
         </button>
-
         <button
           onClick={() => onStart('order')}
-          className="glass glass-hover rounded-2xl p-6 text-left group transition-all duration-200 hover:scale-[1.02]"
+          className="glass glass-hover rounded-xl p-5 text-left hover:scale-[1.02] transition-all"
         >
-          <div className="w-12 h-12 rounded-xl bg-emerald-700 flex items-center justify-center mb-4 group-hover:bg-emerald-600 transition-colors">
-            <ShoppingCart size={22} className="text-white" />
-          </div>
-          <div className="text-xl font-bold text-white mb-1">Nuovo Ordine</div>
-          <div className="text-sm text-slate-400">
-            Compila l'ordine con dati cliente, quantità e note specifiche.
-          </div>
-          <div className="mt-4 flex items-center gap-1 text-emerald-400 text-sm font-medium">
-            Inizia <ChevronRight size={16} />
-          </div>
+          <ShoppingCart size={22} className="text-emerald-400 mb-3" />
+          <div className="font-bold text-white mb-1">Ordine</div>
+          <div className="text-xs text-slate-400">Crea un ordine confermato</div>
         </button>
       </div>
 
-      {/* Import Excel */}
-      <div className="glass rounded-xl p-5">
-        <div className="flex items-center gap-2 mb-3">
-          <Upload size={16} className="text-slate-400" />
-          <span className="text-sm font-semibold text-slate-300">Aggiorna Listino Excel</span>
+      <div className="glass rounded-xl p-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-300">
+            <Upload size={15} className="text-blue-400" />
+            Aggiorna Listino Excel
+          </div>
           {importStatus && (
             <Badge
               text={importStatus.includes('Errore') ? importStatus : `✓ ${importStatus}`}
@@ -425,10 +600,21 @@ function DashboardView({ onStart, onImport, importStatus }) {
         </label>
       </div>
 
+      <div className="glass rounded-xl p-4 border border-sky-500/20">
+        <div className="flex items-center gap-2 text-sm font-medium text-sky-300 mb-2">
+          <BookOpen size={15} />
+          Schede Tecniche PDF
+        </div>
+        <p className="text-xs text-slate-400">
+          Per ogni prodotto selezionato puoi aprire o scaricare la scheda tecnica ufficiale Cascos, estratta automaticamente dal catalogo.
+          Disponibile nelle schede risultati e nel preventivo generato.
+        </p>
+      </div>
+
       <div className="grid grid-cols-3 gap-3 text-center">
         {[
           { icon: <Package size={18}/>, label: 'Prodotti', value: productsData.length },
-          { icon: <Gauge size={18}/>,   label: 'Modelli',   value: 'C3.2 → C7' },
+          { icon: <BookOpen size={18}/>, label: 'PDF Schede', value: Object.keys(PDF_SCHEDE).length },
           { icon: <Euro size={18}/>,    label: 'Prezzi',    value: 'Live 2026' },
         ].map((c, i) => (
           <div key={i} className="glass rounded-xl p-3">
@@ -443,10 +629,6 @@ function DashboardView({ onStart, onImport, importStatus }) {
 }
 
 // ─── CONFIGURATOR VIEW (4 step) ───────────────────────────────────────────────
-// Step 0: Pavimentazione
-// Step 1: Tipo veicolo
-// Step 2: Distanza punti di presa (da PDF)
-// Step 3: → Results
 
 function ConfiguratorView({ mode, products, onResult, onBack }) {
   const [step, setStep]               = useState(0);
@@ -456,20 +638,15 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
   const [sliderVal, setSliderVal]     = useState(950);
   const [useSlider, setUseSlider]     = useState(false);
 
-  // ─ Step 0: Pavimentazione
-  const handleFloor = (id) => { setPav(id); setStep(1); };
-
-  // ─ Step 1: Veicolo
+  const handleFloor   = (id) => { setPav(id); setStep(1); };
   const handleVehicle = (id) => { setVeicolo(id); setStep(2); };
 
-  // ─ Step 2: Distanza — preset
   const handlePreset = (mm) => {
     setDistanza(mm);
     const results = selectProducts(products, pavimentazione, veicolo, mm);
     onResult({ pavimentazione, veicolo, distanzaMm: mm, results });
   };
 
-  // ─ Step 2: Distanza — slider custom
   const handleSliderConfirm = () => {
     const mm = sliderVal;
     setDistanza(mm);
@@ -477,7 +654,6 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
     onResult({ pavimentazione, veicolo, distanzaMm: mm, results });
   };
 
-  // Preset filtrati per veicolo selezionato (id reali da rules.js)
   const presetsPerVeicolo = DISTANZA_PRESETS.filter(p =>
     !veicolo || p.veicoli.includes(veicolo)
   ).filter((p, i, arr) => arr.findIndex(x => x.mm === p.mm && x.desc === p.desc) === i);
@@ -499,7 +675,6 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
         </div>
       </div>
 
-      {/* STEP 0 – Pavimentazione */}
       {step === 0 && (
         <div className="animate-slide-up">
           <h2 className="text-xl font-bold text-white mb-1">Tipo di Pavimentazione</h2>
@@ -528,7 +703,6 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
         </div>
       )}
 
-      {/* STEP 1 – Veicolo */}
       {step === 1 && (
         <div className="animate-slide-up">
           <div className="flex items-center gap-2 mb-1">
@@ -558,7 +732,6 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
         </div>
       )}
 
-      {/* STEP 2 – Distanza punti di presa (bracci) */}
       {step === 2 && (
         <div className="animate-slide-up space-y-5">
           <div>
@@ -572,7 +745,6 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
             </p>
           </div>
 
-          {/* Info box PDF */}
           <div className="glass rounded-xl p-4 border border-violet-500/20">
             <div className="flex items-start gap-2">
               <Ruler size={15} className="text-violet-400 mt-0.5 flex-shrink-0" />
@@ -587,7 +759,6 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
             </div>
           </div>
 
-          {/* Toggle preset / slider */}
           <div className="flex gap-2">
             <button
               onClick={() => setUseSlider(false)}
@@ -603,84 +774,48 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
                 useSlider ? 'bg-blue-600 text-white' : 'glass text-slate-400 hover:text-white'
               }`}
             >
-              Inserisci mm
+              Valore preciso
             </button>
           </div>
 
-          {/* Preset */}
-          {!useSlider && (
+          {!useSlider ? (
             <div className="space-y-2">
-              <div className="text-xs text-slate-500 uppercase tracking-wider mb-1">
-                Preset suggeriti per: <span className="text-white">{VEHICLE_TYPES.find(v => v.id === veicolo)?.label}</span>
-              </div>
-              {presetsPerVeicolo.map(p => (
+              {presetsPerVeicolo.map((p, i) => (
                 <button
-                  key={p.mm}
+                  key={i}
                   onClick={() => handlePreset(p.mm)}
-                  className="w-full glass glass-hover rounded-xl px-4 py-3.5 text-left flex items-center justify-between gap-4 transition-all hover:scale-[1.005]"
+                  className="w-full glass glass-hover rounded-xl px-4 py-3 text-left flex items-center gap-4 transition-all hover:scale-[1.005]"
                 >
-                  <div>
-                    <div className="font-mono font-bold text-white text-base">{p.label}</div>
-                    <div className="text-xs text-slate-400">{p.desc}</div>
-                  </div>
+                  <span className="font-mono font-bold text-blue-400 text-sm w-20 flex-shrink-0">{p.label}</span>
+                  <span className="text-sm text-slate-300 flex-1 min-w-0 truncate">{p.desc}</span>
                   <ChevronRight size={16} className="text-slate-500 flex-shrink-0" />
                 </button>
               ))}
-              {presetsPerVeicolo.length === 0 && (
-                <div className="text-sm text-slate-400 text-center py-4">
-                  Nessun preset per questo veicolo — usa "Inserisci mm"
-                </div>
-              )}
             </div>
-          )}
-
-          {/* Slider */}
-          {useSlider && (
-            <div className="space-y-4">
-              <div className="glass rounded-xl p-5">
-                <div className="text-center mb-4">
-                  <div className="font-mono text-4xl font-bold text-white">{sliderVal}</div>
-                  <div className="text-xs text-slate-400 mt-1">mm — distanza minima punti di presa</div>
-                </div>
-                <input
-                  type="range"
-                  min={597}
-                  max={1810}
-                  step={5}
-                  value={sliderVal}
-                  onChange={e => setSliderVal(Number(e.target.value))}
-                  className="w-full accent-blue-500"
-                />
-                <div className="flex justify-between text-xs text-slate-500 mt-1">
-                  <span>597 mm</span>
-                  <span>1810 mm</span>
-                </div>
+          ) : (
+            <div className="glass rounded-xl p-5 space-y-4">
+              <div className="text-center">
+                <div className="text-3xl font-bold text-white font-mono">{sliderVal} mm</div>
+                <div className="text-xs text-slate-500 mt-1">distanza punti di presa</div>
               </div>
-
-              {/* Preview modelli compatibili */}
-              <div className="glass rounded-xl p-4">
-                <div className="text-xs text-slate-500 uppercase tracking-wider mb-2">Modelli compatibili a {sliderVal} mm</div>
-                {BRACCI_RULES.filter(r => sliderVal >= r.minMm && sliderVal <= r.maxMm).length === 0 ? (
-                  <div className="text-xs text-amber-400">Nessun modello copre questa distanza — controlla la misura</div>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {BRACCI_RULES
-                      .filter(r => sliderVal >= r.minMm && sliderVal <= r.maxMm)
-                      .map(r => (
-                        <Badge key={r.modelloKey} text={r.label} color="violet" />
-                      ))
-                    }
-                  </div>
-                )}
+              <input
+                type="range"
+                min={597}
+                max={1810}
+                step={5}
+                value={sliderVal}
+                onChange={e => setSliderVal(parseInt(e.target.value))}
+                className="w-full accent-blue-500"
+              />
+              <div className="flex justify-between text-xs text-slate-500 font-mono">
+                <span>597 mm</span>
+                <span>1810 mm</span>
               </div>
-
               <button
                 onClick={handleSliderConfirm}
-                disabled={BRACCI_RULES.filter(r => sliderVal >= r.minMm && sliderVal <= r.maxMm).length === 0}
-                className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold rounded-xl py-4 flex items-center justify-center gap-2 transition-colors"
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-lg py-3 transition-colors"
               >
-                <Ruler size={18} /> Cerca sollevatori compatibili
-                <ChevronRight size={18} />
+                Cerca modelli per {sliderVal} mm
               </button>
             </div>
           )}
@@ -690,10 +825,12 @@ function ConfiguratorView({ mode, products, onResult, onBack }) {
   );
 }
 
+// ─── RESULTS VIEW ─────────────────────────────────────────────────────────────
+
 function ResultsView({ mode, config, onSelectProduct, onBack, onReset }) {
-  const { pavimentazione, veicolo, distanzaMm, results } = config;
-  const floorLabel   = FLOOR_TYPES.find(f => f.id === pavimentazione)?.label;
-  const vehicleInfo  = VEHICLE_TYPES.find(v => v.id === veicolo);
+  const { results = [], veicolo, pavimentazione, distanzaMm } = config;
+  const vehicleInfo = VEHICLE_TYPES.find(v => v.id === veicolo);
+  const floorLabel  = FLOOR_TYPES.find(f => f.id === pavimentazione)?.label;
 
   return (
     <div className="animate-fade-in space-y-5">
@@ -703,49 +840,21 @@ function ResultsView({ mode, config, onSelectProduct, onBack, onReset }) {
         </button>
         <div>
           <div className="text-xs text-slate-500 uppercase tracking-wider mb-0.5">
-            {mode === 'order' ? 'Nuovo Ordine' : 'Nuovo Preventivo'} — Risultati
+            {mode === 'order' ? 'Risultati Ordine' : 'Risultati Preventivo'}
           </div>
-          <StepIndicator current={4} total={4} />
-        </div>
-      </div>
-
-      {/* Config summary */}
-      <div className="glass rounded-xl p-4 flex flex-wrap gap-3 text-sm">
-        <div className="flex items-center gap-2">
-          <Building2 size={14} className="text-slate-400" />
-          <span className="text-slate-400">Pavimento:</span>
-          <span className="text-white font-medium">{floorLabel}</span>
-        </div>
-        <div className="w-px h-4 bg-slate-700" />
-        <div className="flex items-center gap-2">
-          <Truck size={14} className="text-slate-400" />
-          <span className="text-slate-400">Veicolo:</span>
-          <span className="text-white font-medium">{vehicleInfo?.label}</span>
-        </div>
-        <div className="w-px h-4 bg-slate-700" />
-        <div className="flex items-center gap-2">
-          <Ruler size={14} className="text-violet-400" />
-          <span className="text-slate-400">Bracci:</span>
-          <span className="text-violet-300 font-mono font-semibold">{distanzaMm} mm</span>
-        </div>
-        <div className="w-px h-4 bg-slate-700" />
-        <div className="flex items-center gap-2">
-          <Package size={14} className="text-slate-400" />
-          <span className="text-slate-400">Trovati:</span>
-          <span className="text-white font-medium">{results.length} modelli</span>
+          <div className="text-white font-semibold">
+            {vehicleInfo?.icon} {vehicleInfo?.label} · {distanzaMm} mm · {floorLabel}
+          </div>
         </div>
       </div>
 
       {results.length === 0 ? (
-        <div className="glass rounded-xl p-8 text-center">
-          <AlertCircle size={32} className="text-amber-400 mx-auto mb-3" />
-          <div className="text-white font-bold mb-1">Nessun modello compatibile</div>
-          <div className="text-sm text-slate-400 mb-2">
-            La distanza di <strong className="text-white">{distanzaMm} mm</strong> non è coperta da nessun modello
-            per la combinazione selezionata.
-          </div>
-          <div className="text-xs text-slate-500 mb-4">
-            Verifica la misura oppure contatta l'ufficio tecnico Cormach.
+        <div className="glass rounded-xl p-8 text-center space-y-3">
+          <AlertCircle size={32} className="text-amber-400 mx-auto" />
+          <div className="text-white font-semibold">Nessun modello compatibile</div>
+          <div className="text-sm text-slate-400">
+            Nessun sollevatore Cascos copre la combinazione veicolo/pavimentazione/distanza selezionata.
+            Prova a modificare la distanza.
           </div>
           <button onClick={onBack} className="glass glass-hover rounded-xl px-4 py-2 text-sm text-white transition-colors">
             ← Modifica distanza
@@ -775,6 +884,8 @@ function ResultsView({ mode, config, onSelectProduct, onBack, onReset }) {
   );
 }
 
+// ─── QUOTE VIEW ───────────────────────────────────────────────────────────────
+
 function QuoteView({ mode, product, config, onBack, onReset }) {
   const [customer, setCustomer] = useState({ nome: '', azienda: '', email: '', telefono: '', indirizzo: '' });
   const [qty, setQty]           = useState(1);
@@ -790,6 +901,7 @@ function QuoteView({ mode, product, config, onBack, onReset }) {
   const scontoEuro    = prezzoTotale * (sconto / 100);
   const prezzoFinale  = prezzoTotale - scontoEuro;
   const docType       = mode === 'order' ? 'ORDINE' : 'PREVENTIVO';
+  const hasPdf        = !!PDF_SCHEDE[product.codice];
 
   const handleGenerate = () => setGenerated(true);
 
@@ -816,6 +928,7 @@ function QuoteView({ mode, product, config, onBack, onReset }) {
   if (generated) {
     return (
       <div className="animate-fade-in space-y-5">
+        {/* PRINT HEADER */}
         <div className="hidden print:block text-black">
           <div className="flex justify-between items-start border-b-2 border-gray-300 pb-4 mb-6">
             <div>
@@ -839,6 +952,7 @@ function QuoteView({ mode, product, config, onBack, onReset }) {
           </div>
         </div>
 
+        {/* DOCUMENTO */}
         <div className="glass rounded-xl overflow-hidden print:bg-white print:text-black print:rounded-none print:border-0">
           <div className="bg-slate-800 print:bg-gray-100 p-4 border-b border-slate-700 print:border-gray-300">
             <div className="flex justify-between items-start">
@@ -935,18 +1049,36 @@ function QuoteView({ mode, product, config, onBack, onReset }) {
           )}
         </div>
 
+        {/* ─── SCHEDA TECNICA PDF — sezione dedicata nel documento generato ─── */}
+        {hasPdf && (
+          <div className="no-print glass rounded-xl p-4 border border-sky-500/20 space-y-2">
+            <div className="flex items-center gap-2 text-sm font-semibold text-sky-300">
+              <BookOpen size={15} />
+              Scheda Tecnica Ufficiale · {product.modello}
+            </div>
+            <p className="text-xs text-slate-400">
+              Depliant originale Cascos, estratto dal catalogo. Puoi aprirlo, scaricarlo e allegarlo su WhatsApp insieme al preventivo.
+            </p>
+            <SchedaTecnicaButton codice={product.codice} modello={product.modello} />
+            <div className="pt-1 text-xs text-slate-600">
+              💡 Per condividere su WhatsApp: scarica il PDF, poi allegalo manualmente alla chat WhatsApp col cliente.
+            </div>
+          </div>
+        )}
+
+        {/* AZIONI */}
         <div className="no-print grid grid-cols-1 sm:grid-cols-3 gap-3">
           <button
             onClick={handleWhatsApp}
             className="glass glass-hover rounded-xl py-3 flex items-center justify-center gap-2 text-sm text-white font-medium transition-colors"
           >
-            <MessageCircle size={16} /> Condividi WhatsApp
+            <MessageCircle size={16} /> Condividi Testo WhatsApp
           </button>
           <button
             onClick={handleCopyTxt}
             className="glass glass-hover rounded-xl py-3 flex items-center justify-center gap-2 text-sm text-white font-medium transition-colors"
           >
-            <Copy size={16} /> {copied ? 'Copiato ✓' : 'Genera TXT da copiare'}
+            <Copy size={16} /> {copied ? 'Copiato ✓' : 'Copia Testo'}
           </button>
           <button
             onClick={onReset}
@@ -958,6 +1090,8 @@ function QuoteView({ mode, product, config, onBack, onReset }) {
       </div>
     );
   }
+
+  // ─── FORM PREVENTIVO ──────────────────────────────────────────────────────
 
   return (
     <div className="animate-fade-in space-y-5">
@@ -986,6 +1120,11 @@ function QuoteView({ mode, product, config, onBack, onReset }) {
             <div className="text-xs text-slate-500">p. unitario netto</div>
           </div>
         </div>
+        {hasPdf && (
+          <div className="mt-3 pt-3 border-t border-slate-700/50">
+            <SchedaTecnicaButton codice={product.codice} modello={product.modello} compact />
+          </div>
+        )}
       </div>
 
       <div className="glass rounded-xl p-4 space-y-3">
