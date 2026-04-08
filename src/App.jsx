@@ -75,8 +75,9 @@ async function getPdfLib() {
 
 async function fetchPdfBytes(fileName) {
   if (pdfCache[fileName]) return pdfCache[fileName];
-  // import.meta.env.BASE_URL = '/quoteflow-pro-cascos/' in produzione Vite
-  // I PDF devono essere nella cartella public/ del progetto.
+  // import.meta.env.BASE_URL risolve il base path Vite correttamente in produzione
+  // es. con base: '/quoteflow-pro-cascos/' → '/quoteflow-pro-cascos/cascos con pedana.pdf'
+  // I PDF devono essere nella cartella public/ del progetto Vite.
   const base = import.meta.env.BASE_URL || '/';
   const url = base.endsWith('/') ? `${base}${fileName}` : `${base}/${fileName}`;
   const response = await fetch(url);
@@ -86,11 +87,6 @@ async function fetchPdfBytes(fileName) {
   return bytes;
 }
 
-/**
- * Estrae le pagine specifiche dal PDF sorgente e restituisce un Uint8Array.
- * @param {string} codice - codice prodotto (es. '13120E')
- * @returns {Promise<{bytes: Uint8Array, fileName: string}>}
- */
 async function extractSchedaTecnica(codice) {
   const mapping = PDF_SCHEDE[codice];
   if (!mapping) throw new Error(`Nessuna scheda tecnica per codice ${codice}`);
@@ -102,7 +98,6 @@ async function extractSchedaTecnica(codice) {
   const srcDoc = await PDFDocument.load(srcBytes);
   const newDoc = await PDFDocument.create();
 
-  // pages è 1-indexed
   for (const pageNum of mapping.pages) {
     const [page] = await newDoc.copyPages(srcDoc, [pageNum - 1]);
     newDoc.addPage(page);
@@ -115,9 +110,6 @@ async function extractSchedaTecnica(codice) {
   };
 }
 
-/**
- * Scarica il PDF estratto come file.
- */
 async function downloadSchedaTecnica(codice) {
   const { bytes, fileName } = await extractSchedaTecnica(codice);
   const blob = new Blob([bytes], { type: 'application/pdf' });
@@ -132,21 +124,25 @@ async function downloadSchedaTecnica(codice) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/**
- * Apre il PDF estratto in una nuova tab (per condivisione WhatsApp il
- * file va scaricato prima; qui forniamo un link per aprire/visualizzare).
- */
 async function openSchedaTecnica(codice) {
-  // Apre la tab PRIMA delle operazioni async: i browser bloccano
-  // window.open() se chiamato dopo un await (non più nel contesto del click).
-  const newTab = window.open('', '_blank', 'noopener');
+  // window.open() PRIMA dell'async: i browser bloccano i popup aperti dopo un await.
+  // Non usare 'noopener': serve accesso a newTab.document per scrivere il PDF.
+  const newTab = window.open('', '_blank');
   if (!newTab) throw new Error('Popup bloccato. Usa il pulsante Scarica.');
   try {
-    const { bytes } = await extractSchedaTecnica(codice);
+    const { bytes, fileName } = await extractSchedaTecnica(codice);
     const blob = new Blob([bytes], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
-    newTab.location.href = url;
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    // document.write con <embed>: unico metodo affidabile cross-browser
+    // per mostrare un blob PDF in una tab aperta programmaticamente.
+    newTab.document.write(
+      `<!DOCTYPE html><html><head><title>${fileName}</title></head>` +
+      `<body style="margin:0;padding:0;height:100vh;background:#404040">` +
+      `<embed src="${url}" type="application/pdf" width="100%" height="100%" />` +
+      `</body></html>`
+    );
+    newTab.document.close();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
   } catch (err) {
     newTab.close();
     throw err;
